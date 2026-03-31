@@ -1,0 +1,70 @@
+This is a [Next.js](https://nextjs.org) app for your Shop INTEX Chapter 17 prep project.
+
+## Getting Started
+
+1) Install packages and create local env:
+
+```bash
+npm install
+cp .env.example .env.local
+```
+
+2) Fill in `.env.local`:
+
+```bash
+SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
+```
+
+3) Start dev server:
+
+```bash
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+## Assignment features included
+
+- Select Customer page at `/`
+- Customer dashboard + order history at `/customer/[id]`
+- Place new order form at `/customer/[id]/new-order`
+- Warehouse queue page at `/warehouse`
+- Run scoring button (POST) at `/api/scoring/run`
+- Order create endpoint (POST) at `/api/orders`
+- Pipeline prediction output list shown on `/warehouse`
+
+## Data layer architecture
+
+- Repository contract: `src/lib/shop-repository.ts`
+- Supabase implementation: `src/lib/supabase-shop-repository.ts`
+- Local fallback implementation: `src/lib/memory-shop-repository.ts`
+- Existing in-memory mock store remains in `src/lib/shop-store.ts` as fallback if Supabase env vars are missing.
+
+## Supabase setup + shop.db seed
+
+1) In Supabase SQL editor, run:
+- `supabase/schema.sql`
+
+2) From project root, generate seed SQL from `shop.db`:
+
+```bash
+python scripts/generate_supabase_seed_sql.py
+```
+
+3) In Supabase SQL editor, run:
+- `supabase/seed.sql`
+
+## Deploy on Vercel
+
+1) Push repo to GitHub and import in Vercel.
+2) Set project root to `web`.
+3) Add env vars in Vercel:
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+4) Deploy and verify:
+- `/` Select Customer list loads
+- `/customer/[id]` dashboard + order history load
+- New order save returns to dashboard and persists
+- `/warehouse` queue displays top 50
+- `Run Scoring` updates queue + prediction output section

@@ -41,19 +41,22 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 - Local fallback implementation: `src/lib/memory-shop-repository.ts`
 - Existing in-memory mock store remains in `src/lib/shop-store.ts` as fallback if Supabase env vars are missing.
 
-## Supabase setup + shop.db seed
+## Supabase setup + `shop.db` seed
 
 1) In Supabase SQL editor, run:
 - `supabase/schema.sql`
 
-2) From project root, generate seed SQL from `shop.db`:
+2) Fastest seed path (recommended): run API batch seeder from project root:
 
 ```bash
-python scripts/generate_supabase_seed_sql.py
+python scripts/seed_supabase_via_api.py
 ```
 
-3) In Supabase SQL editor, run:
-- `supabase/seed.sql`
+This script reads local `shop.db` and upserts `customers`, `orders`, and `shipments` into Supabase.
+
+Alternative (SQL-based) if needed:
+- Generate SQL: `python scripts/generate_supabase_seed_sql.py`
+- Run: `supabase/seed.sql` (or `supabase/seed_chunks/*` if SQL Editor size limits are hit)
 
 ## Deploy on Vercel
 
@@ -68,3 +71,8 @@ python scripts/generate_supabase_seed_sql.py
 - New order save returns to dashboard and persists
 - `/warehouse` queue displays top 50
 - `Run Scoring` updates queue + prediction output section
+
+## Notes
+
+- If notebook files fail to open in Cursor due webview/service-worker errors, use VS Code + Jupyter for notebook execution/submission.
+- For this assignment, `Run Scoring` is deterministic given the same order data, so repeated runs can produce the same queue until data changes.

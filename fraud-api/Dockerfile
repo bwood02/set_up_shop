@@ -11,6 +11,7 @@ COPY models/fraud_model.joblib /app/models/fraud_model.joblib
 COPY fraud-api/main.py /app/main.py
 
 ENV FRAUD_MODEL_PATH=/app/models/fraud_model.joblib
+ENV PORT=8080
 
 EXPOSE 8080
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD uvicorn main:app --host 0.0.0.0 --port $PORT

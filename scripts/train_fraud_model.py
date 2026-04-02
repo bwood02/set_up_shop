@@ -2,12 +2,13 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "scripts"))
-load_dotenv(_ROOT / ".env")
+load_dotenv(_ROOT / ".env", encoding="utf-8-sig")
 
 import joblib
 import numpy as np
@@ -27,6 +28,80 @@ DB_PATH = ROOT / "shop.db"
 MODELS_DIR = ROOT / "models"
 MODELS_DIR.mkdir(exist_ok=True)
 
+# Host markers after user:password (Supabase direct + common pooler hostname).
+_SUPABASE_AUTH_SPLIT_MARKERS = ("@db.", "@aws-")
+
+
+def _clean_env_str(value: str) -> str:
+    s = value.strip().strip("\ufeff")
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        s = s[1:-1]
+    return s.strip()
+
+
+def encode_database_url_password(url: str) -> str:
+    """If the password contains a raw '@', urlparse/SQLAlchemy treat it wrong. Encode those chars.
+
+    Paste the normal Supabase URI with a real password; no need to pre-encode in .env or GitHub.
+    Already-encoded passwords (no raw '@' in the secret) are left unchanged.
+    """
+    if "://" not in url:
+        return url
+    scheme, sep, rest = url.partition("://")
+    marker_pos = -1
+    for m in _SUPABASE_AUTH_SPLIT_MARKERS:
+        p = rest.rfind(m)
+        if p > marker_pos:
+            marker_pos = p
+    if marker_pos == -1:
+        return url
+    userinfo, host_part = rest[:marker_pos], rest[marker_pos:]
+    if ":" not in userinfo:
+        return url
+    username, _, password = userinfo.partition(":")
+    if "@" not in password:
+        return url
+    safe = quote(password, safe="")
+    return f"{scheme}{sep}{username}:{safe}{host_part}"
+
+
+def _ensure_sslmode_require(url: str) -> str:
+    lower = url.lower()
+    if "sslmode=" in lower:
+        return url
+    joiner = "&" if "?" in url else "?"
+    return f"{url}{joiner}sslmode=require"
+
+
+def resolve_postgres_connection_url() -> str:
+    """Database URL from DATABASE_URL or discrete SUPABASE_DB_* vars (recommended if URL keeps breaking)."""
+    from sqlalchemy.engine.url import URL
+
+    host = os.getenv("SUPABASE_DB_HOST")
+    password = os.getenv("SUPABASE_DB_PASSWORD")
+    if host and password:
+        host = _clean_env_str(host)
+        password = _clean_env_str(password)
+        user = _clean_env_str(os.getenv("SUPABASE_DB_USER", "postgres"))
+        dbname = _clean_env_str(os.getenv("SUPABASE_DB_NAME", "postgres"))
+        port = int(_clean_env_str(os.getenv("SUPABASE_DB_PORT", "5432")))
+        u = URL.create(
+            drivername="postgresql+psycopg2",
+            username=user,
+            password=password,
+            host=host,
+            port=port,
+            database=dbname,
+            query={"sslmode": "require"},
+        )
+        return u.render_as_string(hide_password=False)
+
+    raw = os.getenv("DATABASE_URL") or os.getenv("SUPABASE_DB_URL")
+    if not raw:
+        return ""
+    url = encode_database_url_password(_clean_env_str(raw))
+    return _ensure_sslmode_require(url)
+
 
 def load_tables_sqlite() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     conn = sqlite3.connect(DB_PATH)
@@ -43,22 +118,38 @@ def load_tables_postgres(url: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
         from sqlalchemy import create_engine, text
     except ImportError as exc:
         raise RuntimeError("Install sqlalchemy for DATABASE_URL training: pip install sqlalchemy psycopg2-binary") from exc
-    engine = create_engine(url)
-    customers = pd.read_sql_query(text("SELECT * FROM customers"), engine)
-    orders = pd.read_sql_query(text("SELECT * FROM orders"), engine)
-    shipments = pd.read_sql_query(text("SELECT * FROM shipments"), engine)
+    engine = create_engine(url, connect_args={"connect_timeout": 20})
     try:
-        order_items = pd.read_sql_query(text("SELECT * FROM order_items"), engine)
-    except Exception:
-        order_items = pd.DataFrame(columns=["order_item_id", "order_id", "quantity"])
-    engine.dispose()
-    return customers, orders, shipments, order_items
+        customers = pd.read_sql_query(text("SELECT * FROM customers"), engine)
+        orders = pd.read_sql_query(text("SELECT * FROM orders"), engine)
+        shipments = pd.read_sql_query(text("SELECT * FROM shipments"), engine)
+        try:
+            order_items = pd.read_sql_query(text("SELECT * FROM order_items"), engine)
+        except Exception:
+            order_items = pd.DataFrame(columns=["order_item_id", "order_id", "quantity"])
+        return customers, orders, shipments, order_items
+    finally:
+        engine.dispose()
 
 
 def main() -> None:
-    db_url = os.getenv("DATABASE_URL") or os.getenv("SUPABASE_DB_URL")
+    db_url = resolve_postgres_connection_url()
     if db_url:
-        customers, orders, shipments, order_items = load_tables_postgres(db_url)
+        try:
+            customers, orders, shipments, order_items = load_tables_postgres(db_url)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "name or service not known" in msg or "could not translate host name" in msg:
+                raise ConnectionError(
+                    "Could not reach the database host (DNS/network). Check:\n"
+                    "  • Phone or school Wi-Fi sometimes blocks database domains — try another network or phone hotspot.\n"
+                    "  • In Supabase: Project Settings -> Database — copy **Host** again (must be like db.xxxxx.supabase.co).\n"
+                    "  • In PowerShell: nslookup db.YOUR_REF.supabase.co should return an address.\n"
+                    "  • Or set discrete vars in .env (no URL parsing): SUPABASE_DB_HOST, SUPABASE_DB_PASSWORD, "
+                    "optional SUPABASE_DB_USER, SUPABASE_DB_PORT, SUPABASE_DB_NAME.\n"
+                    f"Original error: {exc}"
+                ) from exc
+            raise
     elif DB_PATH.exists():
         customers, orders, shipments, order_items = load_tables_sqlite()
     else:

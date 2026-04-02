@@ -1,4 +1,4 @@
-import type { Customer, Order, PipelinePrediction } from "@/lib/shop-types";
+import type { CreateOrderInput, Customer, Order, PipelinePrediction } from "@/lib/shop-types";
 import { createMemoryShopRepository } from "@/lib/memory-shop-repository";
 import { createSupabaseShopRepository } from "@/lib/supabase-shop-repository";
 
@@ -11,7 +11,7 @@ export interface ShopRepository {
   getCustomers(): Promise<Customer[]>;
   getCustomerById(customerId: number): Promise<Customer | null>;
   getOrdersByCustomer(customerId: number): Promise<Order[]>;
-  createOrder(customerId: number, totalAmount: number): Promise<Order>;
+  createOrder(input: CreateOrderInput): Promise<Order>;
   runLateDeliveryScoring(): Promise<RunScoringResult>;
   getPriorityQueue(): Promise<Order[]>;
   getPipelinePredictions(): Promise<PipelinePrediction[]>;

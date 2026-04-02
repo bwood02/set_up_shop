@@ -30,7 +30,10 @@ create table if not exists public.orders (
   tax_amount double precision,
   order_total double precision,
   risk_score double precision,
-  is_fraud integer
+  is_fraud integer,
+  fraud_probability double precision,
+  predicted_fraud integer,
+  fraud_scored_at timestamptz
 );
 
 create table if not exists public.shipments (

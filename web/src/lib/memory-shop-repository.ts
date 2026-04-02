@@ -1,4 +1,5 @@
 import type { ShopRepository } from "@/lib/shop-repository";
+import type { CreateOrderInput } from "@/lib/shop-types";
 import {
   createOrder,
   getCustomerById,
@@ -21,8 +22,8 @@ export function createMemoryShopRepository(): ShopRepository {
     async getOrdersByCustomer(customerId: number) {
       return getOrdersByCustomer(customerId);
     },
-    async createOrder(customerId: number, totalAmount: number) {
-      return createOrder(customerId, totalAmount);
+    async createOrder(input: CreateOrderInput) {
+      return createOrder(input.customerId, input.totalAmount);
     },
     async runLateDeliveryScoring() {
       return runLateDeliveryScoring();

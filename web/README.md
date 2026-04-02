@@ -76,3 +76,15 @@ Alternative (SQL-based) if needed:
 
 - If notebook files fail to open in Cursor due webview/service-worker errors, use VS Code + Jupyter for notebook execution/submission.
 - For this assignment, `Run Scoring` is deterministic given the same order data, so repeated runs can produce the same queue until data changes.
+
+## Fraud model (live inference)
+
+- Train: `python scripts/train_fraud_model.py` (set `DATABASE_URL` or use local `shop.db`).
+- Inference: deploy [`fraud-api`](../fraud-api/) (see [`fraud-api/README.md`](../fraud-api/README.md)).
+- Set `FRAUD_API_URL` and optional `FRAUD_API_SECRET` in Vercel; new orders call `/predict` and fill `fraud_probability` / `predicted_fraud` on `orders`.
+- Run [`web/supabase/migrations/001_fraud_prediction_columns.sql`](supabase/migrations/001_fraud_prediction_columns.sql) in Supabase if the table predates those columns.
+
+## Nightly retrain (GitHub Actions)
+
+- Add repo secret `DATABASE_URL` (Supabase Postgres connection string).
+- Workflow [`.github/workflows/nightly-retrain.yml`](../../.github/workflows/nightly-retrain.yml) uploads `fraud_model.joblib` as an artifact; redeploy or copy into `fraud-api` / `models/` as needed.

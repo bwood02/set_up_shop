@@ -1,12 +1,15 @@
+import { predictFraud } from "@/lib/fraud-inference";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { ShopRepository } from "@/lib/shop-repository";
-import type { Customer, Order, PipelinePrediction } from "@/lib/shop-types";
+import type { CreateOrderInput, Customer, Order, PipelinePrediction } from "@/lib/shop-types";
 
 type DbCustomer = {
   customer_id: number;
   full_name: string | null;
   email: string | null;
 };
+
+type DbCustomerRow = Record<string, unknown>;
 
 type DbOrder = {
   order_id: number;
@@ -15,14 +18,18 @@ type DbOrder = {
   order_total: number | null;
   is_fraud: number | null;
   risk_score: number | null;
+  fraud_probability?: number | null;
+  predicted_fraud?: number | null;
 };
 
 const SCORE_INSERT_BATCH_SIZE = 500;
 
+const ORDER_SELECT_BASE =
+  "order_id,customer_id,order_datetime,order_total,is_fraud,risk_score,fraud_probability,predicted_fraud";
+
 function normalizeProbability(raw: number | null | undefined): number {
   const value = Number(raw ?? 0);
   if (!Number.isFinite(value)) return 0;
-  // Existing source data sometimes stores risk_score as percentage-like values (e.g. 63, 1000).
   const scaled = value > 1 ? value / 100 : value;
   return Math.max(0, Math.min(1, scaled));
 }
@@ -46,6 +53,12 @@ function mapCustomer(row: DbCustomer): Customer {
 }
 
 function mapOrder(row: DbOrder): Order {
+  const fraudProb = row.fraud_probability != null && row.fraud_probability !== undefined
+    ? Number(row.fraud_probability)
+    : undefined;
+  const predicted = row.predicted_fraud != null && row.predicted_fraud !== undefined
+    ? Number(row.predicted_fraud) === 1
+    : undefined;
   return {
     id: row.order_id,
     customerId: row.customer_id,
@@ -53,7 +66,36 @@ function mapOrder(row: DbOrder): Order {
     totalAmount: Number(row.order_total ?? 0),
     isFraud: Number(row.is_fraud ?? 0) === 1,
     lateDeliveryProbability: normalizeProbability(row.risk_score),
+    ...(fraudProb !== undefined ? { fraudProbability: fraudProb } : {}),
+    ...(predicted !== undefined ? { predictedFraud: predicted } : {}),
   };
+}
+
+function orderRowToPredictPayload(row: Record<string, unknown>): Record<string, unknown> {
+  const allowed = [
+    "order_id",
+    "customer_id",
+    "order_datetime",
+    "billing_zip",
+    "shipping_zip",
+    "shipping_state",
+    "payment_method",
+    "device_type",
+    "ip_country",
+    "promo_used",
+    "promo_code",
+    "order_subtotal",
+    "shipping_fee",
+    "tax_amount",
+    "order_total",
+    "risk_score",
+    "is_fraud",
+  ];
+  const out: Record<string, unknown> = {};
+  for (const key of allowed) {
+    if (key in row) out[key] = row[key];
+  }
+  return out;
 }
 
 export function createSupabaseShopRepository(): ShopRepository {
@@ -83,7 +125,7 @@ export function createSupabaseShopRepository(): ShopRepository {
     async getOrdersByCustomer(customerId: number) {
       const { data, error } = await supabase
         .from("orders")
-        .select("order_id,customer_id,order_datetime,order_total,is_fraud,risk_score")
+        .select(ORDER_SELECT_BASE)
         .eq("customer_id", customerId)
         .order("order_datetime", { ascending: false })
         .limit(1000);
@@ -91,7 +133,7 @@ export function createSupabaseShopRepository(): ShopRepository {
       return (data as DbOrder[]).map(mapOrder);
     },
 
-    async createOrder(customerId: number, totalAmount: number) {
+    async createOrder(input: CreateOrderInput) {
       const { data: latestOrder, error: latestOrderError } = await supabase
         .from("orders")
         .select("order_id")
@@ -101,38 +143,75 @@ export function createSupabaseShopRepository(): ShopRepository {
       if (latestOrderError) throw latestOrderError;
       const nextOrderId = Number(latestOrder?.order_id ?? 0) + 1;
 
+      const orderTotal = input.totalAmount + input.shippingFee + input.taxAmount;
       const payload = {
         order_id: nextOrderId,
-        customer_id: customerId,
+        customer_id: input.customerId,
         order_datetime: new Date().toISOString(),
-        billing_zip: "00000",
-        shipping_zip: "00000",
-        shipping_state: "NA",
-        payment_method: "card",
-        device_type: "web",
-        ip_country: "US",
-        promo_used: 0,
-        promo_code: null,
-        order_subtotal: totalAmount,
-        shipping_fee: 0,
-        tax_amount: 0,
-        order_total: totalAmount,
+        billing_zip: input.billingZip,
+        shipping_zip: input.shippingZip,
+        shipping_state: input.shippingState,
+        payment_method: input.paymentMethod,
+        device_type: input.deviceType,
+        ip_country: input.ipCountry,
+        promo_used: input.promoUsed ? 1 : 0,
+        promo_code: input.promoCode || null,
+        order_subtotal: input.totalAmount,
+        shipping_fee: input.shippingFee,
+        tax_amount: input.taxAmount,
+        order_total: orderTotal,
         risk_score: 0,
         is_fraud: 0,
       };
-      const { data, error } = await supabase
+      const { data: inserted, error: insertError } = await supabase
         .from("orders")
         .insert(payload)
-        .select("order_id,customer_id,order_datetime,order_total,is_fraud,risk_score")
+        .select("*")
         .single();
-      if (error) throw error;
-      return mapOrder(data as DbOrder);
+      if (insertError) throw insertError;
+
+      const { data: custRow, error: custError } = await supabase
+        .from("customers")
+        .select("*")
+        .eq("customer_id", input.customerId)
+        .single();
+      if (custError) {
+        return mapOrder(inserted as DbOrder);
+      }
+
+      try {
+        const orderPayload = orderRowToPredictPayload(inserted as Record<string, unknown>);
+        const result = await predictFraud(orderPayload, custRow as DbCustomerRow);
+        if (result) {
+          const { error: updError } = await supabase
+            .from("orders")
+            .update({
+              fraud_probability: result.fraud_probability,
+              predicted_fraud: result.predicted_fraud,
+              fraud_scored_at: new Date().toISOString(),
+            })
+            .eq("order_id", nextOrderId);
+          if (updError) {
+            console.error("[fraud] Supabase update failed:", updError.message, updError);
+          } else {
+            return mapOrder({
+              ...(inserted as DbOrder),
+              fraud_probability: result.fraud_probability,
+              predicted_fraud: result.predicted_fraud,
+            });
+          }
+        }
+      } catch (e) {
+        console.error("[fraud] scoring skipped:", e);
+      }
+
+      return mapOrder(inserted as DbOrder);
     },
 
     async runLateDeliveryScoring() {
       const { data: orders, error: ordersError } = await supabase
         .from("orders")
-        .select("order_id,customer_id,order_datetime,order_total,is_fraud,risk_score")
+        .select(ORDER_SELECT_BASE)
         .order("order_id", { ascending: true });
       if (ordersError) throw ordersError;
 
@@ -153,12 +232,10 @@ export function createSupabaseShopRepository(): ShopRepository {
           scored_at: scoredAt,
         }));
 
-        // Batch inserts reduce payload size and avoid very large single request bodies.
         for (let i = 0; i < scoreRows.length; i += SCORE_INSERT_BATCH_SIZE) {
           const batch = scoreRows.slice(i, i + SCORE_INSERT_BATCH_SIZE);
           const { error: scoresError } = await supabase.from("order_scores").insert(batch);
           if (scoresError) {
-            // Table may not exist in early setup; fallback queue path still works.
             break;
           }
         }
@@ -189,7 +266,7 @@ export function createSupabaseShopRepository(): ShopRepository {
           const orderIds = scoredRows.map((row) => Number(row.order_id));
           const { data: ordersById, error: ordersByIdError } = await supabase
             .from("orders")
-            .select("order_id,customer_id,order_datetime,order_total,is_fraud,risk_score")
+            .select(ORDER_SELECT_BASE)
             .in("order_id", orderIds);
           if (ordersByIdError) throw ordersByIdError;
           const orderMap = new Map((ordersById as DbOrder[]).map((row) => [row.order_id, row]));
@@ -208,7 +285,7 @@ export function createSupabaseShopRepository(): ShopRepository {
 
       const { data, error } = await supabase
         .from("orders")
-        .select("order_id,customer_id,order_datetime,order_total,is_fraud,risk_score")
+        .select(ORDER_SELECT_BASE)
         .order("risk_score", { ascending: false })
         .limit(50);
       if (error) throw error;

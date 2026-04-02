@@ -62,6 +62,8 @@ export default async function CustomerPage({ params }: Props) {
                   <th className="px-2 py-2">Date</th>
                   <th className="px-2 py-2">Total</th>
                   <th className="px-2 py-2">Late Delivery Risk</th>
+                  <th className="px-2 py-2">Fraud risk (model)</th>
+                  <th className="px-2 py-2">Flagged</th>
                 </tr>
               </thead>
               <tbody>
@@ -72,6 +74,14 @@ export default async function CustomerPage({ params }: Props) {
                     <td className="px-2 py-2">${order.totalAmount.toFixed(2)}</td>
                     <td className="px-2 py-2">
                       {(order.lateDeliveryProbability * 100).toFixed(1)}%
+                    </td>
+                    <td className="px-2 py-2">
+                      {order.fraudProbability != null
+                        ? `${(order.fraudProbability * 100).toFixed(1)}%`
+                        : "—"}
+                    </td>
+                    <td className="px-2 py-2">
+                      {order.predictedFraud === true ? "Yes" : order.predictedFraud === false ? "No" : "—"}
                     </td>
                   </tr>
                 ))}

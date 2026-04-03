@@ -133,6 +133,13 @@ def main() -> None:
 
     db_url = resolve_database_url()
     hostaddr = _resolve_ipv4_hostaddr(db_url)
+    try:
+        from sqlalchemy.engine.url import make_url
+
+        u = make_url(db_url)
+        print(f"[backfill] Supabase host={u.host} port={u.port} hostaddr_ipv4={hostaddr}")
+    except Exception:
+        print(f"[backfill] hostaddr_ipv4={hostaddr}")
     connect_args: dict[str, object] = {"connect_timeout": 20}
     if hostaddr:
         connect_args["hostaddr"] = hostaddr

@@ -122,6 +122,7 @@ def load_tables_postgres(url: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
     # GitHub runners may have IPv6 routing issues; force IPv4 by resolving host
     # to an IPv4 address and passing it as `hostaddr` to psycopg2.
     connect_args: dict[str, object] = {"connect_timeout": 20}
+    hostaddr = None
     try:
         from sqlalchemy.engine.url import make_url
         u = make_url(url)
@@ -130,9 +131,11 @@ def load_tables_postgres(url: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
         if host:
             infos = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_STREAM)
             if infos:
-                connect_args["hostaddr"] = infos[0][4][0]
+                hostaddr = infos[0][4][0]
+                connect_args["hostaddr"] = hostaddr
     except Exception:
         pass
+    print(f"[train] Supabase hostaddr_ipv4={hostaddr}")
 
     engine = create_engine(url, connect_args=connect_args)
     try:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,6 +22,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine.url import make_url
 from urllib.parse import quote
 
 from fraud_ml_common import align_feature_matrix, build_training_dataframe
@@ -79,6 +81,26 @@ def _ensure_sslmode_require(url: str) -> str:
     return f"{url}{joiner}sslmode=require"
 
 
+def _resolve_ipv4_hostaddr(db_url: str) -> str | None:
+    """
+    GitHub runners sometimes fail to reach Supabase over IPv6, even though IPv4
+    works. We resolve the hostname to an IPv4 address and pass it to
+    psycopg2 via `hostaddr` to prefer IPv4.
+    """
+    try:
+        u = make_url(db_url)
+        host = u.host
+        port = u.port or 5432
+        if not host:
+            return None
+        infos = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_STREAM)
+        if not infos:
+            return None
+        return infos[0][4][0]
+    except Exception:
+        return None
+
+
 def resolve_database_url() -> str:
     url = os.getenv("DATABASE_URL") or os.getenv("SUPABASE_DB_URL")
     if not url:
@@ -110,7 +132,11 @@ def main() -> None:
         raise FileNotFoundError(f"Fraud model artifact not found at: {MODEL_PATH}")
 
     db_url = resolve_database_url()
-    engine = create_engine(db_url, connect_args={"connect_timeout": 20})
+    hostaddr = _resolve_ipv4_hostaddr(db_url)
+    connect_args: dict[str, object] = {"connect_timeout": 20}
+    if hostaddr:
+        connect_args["hostaddr"] = hostaddr
+    engine = create_engine(db_url, connect_args=connect_args)
 
     art = joblib.load(MODEL_PATH)
     pipeline = art["pipeline"]

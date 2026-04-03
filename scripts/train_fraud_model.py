@@ -3,6 +3,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from urllib.parse import quote
+import socket
 
 from dotenv import load_dotenv
 
@@ -118,7 +119,22 @@ def load_tables_postgres(url: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
         from sqlalchemy import create_engine, text
     except ImportError as exc:
         raise RuntimeError("Install sqlalchemy for DATABASE_URL training: pip install sqlalchemy psycopg2-binary") from exc
-    engine = create_engine(url, connect_args={"connect_timeout": 20})
+    # GitHub runners may have IPv6 routing issues; force IPv4 by resolving host
+    # to an IPv4 address and passing it as `hostaddr` to psycopg2.
+    connect_args: dict[str, object] = {"connect_timeout": 20}
+    try:
+        from sqlalchemy.engine.url import make_url
+        u = make_url(url)
+        host = u.host
+        port = u.port or 5432
+        if host:
+            infos = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_STREAM)
+            if infos:
+                connect_args["hostaddr"] = infos[0][4][0]
+    except Exception:
+        pass
+
+    engine = create_engine(url, connect_args=connect_args)
     try:
         customers = pd.read_sql_query(text("SELECT * FROM customers"), engine)
         orders = pd.read_sql_query(text("SELECT * FROM orders"), engine)

@@ -1,0 +1,38 @@
+name: Backfill fraud predictions
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Compute predictions but do not update Supabase"
+        required: false
+        default: "true"
+      limit:
+        description: "Max number of orders to backfill (0 = all)"
+        required: false
+        default: "50"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-ml.txt
+
+      - name: Backfill fraud predictions
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          DRY_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_FLAG="--dry-run"
+          fi
+          python scripts/backfill_fraud_predictions.py $DRY_FLAG --limit ${{ inputs.limit }} --batch-size 250
+

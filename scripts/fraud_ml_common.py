@@ -39,14 +39,16 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["order_datetime", "birthdate", "created_at"]:
         if col not in out.columns:
             continue
-        dt = pd.to_datetime(out[col], errors="coerce")
+        # Normalize to UTC then drop tz info so arithmetic works even if some
+        # sources use timestamptz and others are naive text timestamps.
+        dt = pd.to_datetime(out[col], errors="coerce", utc=True).dt.tz_convert(None)
         out[f"{col}_year"] = dt.dt.year
         out[f"{col}_month"] = dt.dt.month
         out[f"{col}_dow"] = dt.dt.dayofweek
 
     if "birthdate" in out.columns and "order_datetime" in out.columns:
-        birth = pd.to_datetime(out["birthdate"], errors="coerce")
-        order_dt = pd.to_datetime(out["order_datetime"], errors="coerce")
+        birth = pd.to_datetime(out["birthdate"], errors="coerce", utc=True).dt.tz_convert(None)
+        order_dt = pd.to_datetime(out["order_datetime"], errors="coerce", utc=True).dt.tz_convert(None)
         out["customer_age"] = (order_dt - birth).dt.days / 365.25
 
     if "actual_days" in out.columns and "promised_days" in out.columns:

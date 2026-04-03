@@ -81,7 +81,11 @@ def build_training_dataframe(
     df = merge_frames(orders, customers, shipments_agg, item_agg)
     df = engineer_features(df)
     features = [c for c in df.columns if c not in EXCLUDE_FROM_FEATURES]
-    y = df[TARGET].astype(int) if TARGET in df.columns else None
+    # Backfill can run when some historical rows have NULL labels; model
+    # training/inference doesn't need y, so make it robust.
+    y = None
+    if TARGET in df.columns:
+        y = df[TARGET].fillna(0).astype(int)
     return df, features, y
 
 

@@ -182,27 +182,43 @@ def load_tables_postgres(url: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
 
 
 def main() -> None:
-    db_url = resolve_postgres_connection_url()
-    if db_url:
+    supabase_url = os.getenv("SUPABASE_URL", "").strip()
+    supabase_service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if supabase_url and supabase_service_role_key:
+        # GitHub Actions sometimes can’t reach Supabase Postgres over TCP/5432.
+        # PostgREST is HTTPS so it usually works.
+        from supabase_rest import fetch_table_all
+
+        print("[train] Loading training data via Supabase REST (HTTPS)...")
+        customers = pd.DataFrame(fetch_table_all(supabase_url, supabase_service_role_key, "customers"))
+        orders = pd.DataFrame(fetch_table_all(supabase_url, supabase_service_role_key, "orders"))
+        shipments = pd.DataFrame(fetch_table_all(supabase_url, supabase_service_role_key, "shipments"))
         try:
-            customers, orders, shipments, order_items = load_tables_postgres(db_url)
-        except Exception as exc:
-            msg = str(exc).lower()
-            if "name or service not known" in msg or "could not translate host name" in msg:
-                raise ConnectionError(
-                    "Could not reach the database host (DNS/network). Check:\n"
-                    "  • Phone or school Wi-Fi sometimes blocks database domains — try another network or phone hotspot.\n"
-                    "  • In Supabase: Project Settings -> Database — copy **Host** again (must be like db.xxxxx.supabase.co).\n"
-                    "  • In PowerShell: nslookup db.YOUR_REF.supabase.co should return an address.\n"
-                    "  • Or set discrete vars in .env (no URL parsing): SUPABASE_DB_HOST, SUPABASE_DB_PASSWORD, "
-                    "optional SUPABASE_DB_USER, SUPABASE_DB_PORT, SUPABASE_DB_NAME.\n"
-                    f"Original error: {exc}"
-                ) from exc
-            raise
-    elif DB_PATH.exists():
-        customers, orders, shipments, order_items = load_tables_sqlite()
+            order_items = pd.DataFrame(fetch_table_all(supabase_url, supabase_service_role_key, "order_items"))
+        except Exception:
+            order_items = pd.DataFrame(columns=["order_item_id", "order_id", "quantity"])
     else:
-        raise FileNotFoundError(f"No DATABASE_URL and no SQLite at {DB_PATH}")
+        db_url = resolve_postgres_connection_url()
+        if db_url:
+            try:
+                customers, orders, shipments, order_items = load_tables_postgres(db_url)
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "name or service not known" in msg or "could not translate host name" in msg:
+                    raise ConnectionError(
+                        "Could not reach the database host (DNS/network). Check:\n"
+                        "  • Phone or school Wi-Fi sometimes blocks database domains — try another network or phone hotspot.\n"
+                        "  • In Supabase: Project Settings -> Database — copy **Host** again (must be like db.xxxxx.supabase.co).\n"
+                        "  • In PowerShell: nslookup db.YOUR_REF.supabase.co should return an address.\n"
+                        "  • Or set discrete vars in .env (no URL parsing): SUPABASE_DB_HOST, SUPABASE_DB_PASSWORD, "
+                        "optional SUPABASE_DB_USER, SUPABASE_DB_PORT, SUPABASE_DB_NAME.\n"
+                        f"Original error: {exc}"
+                    ) from exc
+                raise
+        elif DB_PATH.exists():
+            customers, orders, shipments, order_items = load_tables_sqlite()
+        else:
+            raise FileNotFoundError(f"No DATABASE_URL and no SQLite at {DB_PATH}")
 
     df, features, y = build_training_dataframe(orders, customers, shipments, order_items)
     if y is None:

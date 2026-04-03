@@ -146,6 +146,102 @@ def main() -> None:
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"Fraud model artifact not found at: {MODEL_PATH}")
 
+    art = joblib.load(MODEL_PATH)
+    pipeline = art["pipeline"]
+    threshold = float(art["threshold"])
+    expected_features = list(art["features"])
+
+    update_ts = datetime.now(timezone.utc).isoformat()
+
+    # Prefer Supabase REST (HTTPS) if env vars are present. This avoids GitHub Actions
+    # network restrictions on direct Postgres (TCP/5432).
+    supabase_url = os.getenv("SUPABASE_URL", "").strip()
+    supabase_service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if supabase_url and supabase_service_role_key:
+        from supabase_rest import fetch_table_all, upsert_rows
+
+        print("[backfill] Using Supabase REST API (HTTPS) backfill.")
+
+        def fetch_df(table: str, select: str) -> pd.DataFrame:
+            rows = fetch_table_all(
+                supabase_url=supabase_url,
+                service_role_key=supabase_service_role_key,
+                table=table,
+                select=select,
+            )
+            return pd.DataFrame(rows)
+
+        orders_df = fetch_df(
+            "orders",
+            "order_id,customer_id,order_datetime,billing_zip,shipping_zip,shipping_state,payment_method,device_type,ip_country,promo_used,promo_code,order_subtotal,shipping_fee,tax_amount,order_total,risk_score,is_fraud,fraud_probability,predicted_fraud,fraud_scored_at",
+        )
+        customers_df = fetch_df(
+            "customers",
+            "customer_id,full_name,email,gender,birthdate,created_at,city,state,zip_code,customer_segment,loyalty_tier,is_active",
+        )
+        shipments_df = fetch_df(
+            "shipments",
+            "order_id,promised_days,actual_days,late_delivery",
+        )
+
+        try:
+            order_items_df = fetch_df("order_items", "order_item_id,order_id,quantity")
+        except Exception:
+            order_items_df = pd.DataFrame(columns=["order_item_id", "order_id", "quantity"])
+
+        # Select orders that need backfill
+        needs = pd.Series([True] * len(orders_df), index=orders_df.index)
+        if "fraud_probability" in orders_df.columns:
+            needs = needs & orders_df["fraud_probability"].isna()
+        if "predicted_fraud" in orders_df.columns:
+            needs = needs | orders_df["predicted_fraud"].isna()
+
+        orders_to_score = orders_df[needs].copy()
+        if "order_id" in orders_to_score.columns:
+            orders_to_score = orders_to_score.sort_values("order_id")
+        if args.limit > 0:
+            orders_to_score = orders_to_score.head(args.limit)
+
+        if orders_to_score.empty:
+            print("No orders found to backfill (already scored).")
+            return
+
+        print(f"[backfill] Scoring {len(orders_to_score)} orders...")
+
+        df, features, _ = build_training_dataframe(
+            orders_to_score,
+            customers_df,
+            shipments_df,
+            order_items_df,
+        )
+
+        X_raw = df[features].copy()
+        X = align_feature_matrix(X_raw, expected_features)
+        proba = pipeline.predict_proba(X)[:, 1]
+        predicted = (proba >= threshold).astype(int)
+
+        update_rows: list[dict[str, object]] = []
+        for oid, p, pred in zip(df["order_id"].astype(int).tolist(), proba.tolist(), predicted.tolist()):
+            update_rows.append(
+                {
+                    "order_id": int(oid),
+                    "fraud_probability": float(p),
+                    "predicted_fraud": int(pred),
+                    "fraud_scored_at": update_ts,
+                }
+            )
+
+        upsert_rows(
+            supabase_url=supabase_url,
+            service_role_key=supabase_service_role_key,
+            table="orders",
+            rows=update_rows,
+            on_conflict="order_id",
+        )
+        print(f"[backfill] Upserted fraud fields for {len(update_rows)} orders.")
+        return
+
+    # Fallback: direct Postgres (TCP/5432). This may fail in some CI environments.
     db_url = resolve_database_url()
     rewritten_url, ipv4_host = _rewrite_db_url_to_ipv4(db_url)
     try:
@@ -156,13 +252,6 @@ def main() -> None:
         print(f"[backfill] ipv4_host={ipv4_host}")
 
     engine = create_engine(rewritten_url, connect_args={"connect_timeout": 20})
-
-    art = joblib.load(MODEL_PATH)
-    pipeline = art["pipeline"]
-    threshold = float(art["threshold"])
-    expected_features = list(art["features"])
-
-    update_ts = datetime.now(timezone.utc).isoformat()
 
     # Pick orders that haven't been scored yet.
     order_limit_clause = "" if args.limit <= 0 else f"LIMIT {int(args.limit)}"

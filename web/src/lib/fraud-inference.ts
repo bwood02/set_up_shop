@@ -5,8 +5,15 @@ export type FraudPredictResult = {
   model_name?: string;
 };
 
+function normalizeFraudApiBaseUrl(raw: string | undefined): string | null {
+  const trimmed = raw?.trim().replace(/\/$/, "");
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
 export async function predictFraud(order: Record<string, unknown>, customer: Record<string, unknown>): Promise<FraudPredictResult | null> {
-  const baseUrl = process.env.FRAUD_API_URL?.replace(/\/$/, "");
+  const baseUrl = normalizeFraudApiBaseUrl(process.env.FRAUD_API_URL);
   if (!baseUrl) {
     return null;
   }

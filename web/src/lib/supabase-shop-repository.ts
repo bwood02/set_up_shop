@@ -200,6 +200,9 @@ export function createSupabaseShopRepository(): ShopRepository {
               predicted_fraud: result.predicted_fraud,
             });
           }
+        } else {
+          // If `predictFraud()` returned null, it usually means FRAUD_API_URL isn't set on this deployment.
+          console.error("[fraud] No fraud prediction result (FRAUD_API_URL present?):", Boolean(process.env.FRAUD_API_URL));
         }
       } catch (e) {
         console.error("[fraud] scoring skipped:", e);

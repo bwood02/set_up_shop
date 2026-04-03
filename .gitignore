@@ -38,3 +38,6 @@ dist/
 build/
 coverage/
 .cache/
+
+# Local project notes
+ai_chats/

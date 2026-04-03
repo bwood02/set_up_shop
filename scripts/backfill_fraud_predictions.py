@@ -81,11 +81,10 @@ def _ensure_sslmode_require(url: str) -> str:
     return f"{url}{joiner}sslmode=require"
 
 
-def _resolve_ipv4_hostaddr(db_url: str) -> str | None:
+def _resolve_ipv4_host(db_url: str) -> str | None:
     """
     GitHub runners sometimes fail to reach Supabase over IPv6, even though IPv4
-    works. We resolve the hostname to an IPv4 address and pass it to
-    psycopg2 via `hostaddr` to prefer IPv4.
+    works. We resolve the hostname to an IPv4 address.
     """
     try:
         u = make_url(db_url)
@@ -99,6 +98,22 @@ def _resolve_ipv4_hostaddr(db_url: str) -> str | None:
         return infos[0][4][0]
     except Exception:
         return None
+
+
+def _rewrite_db_url_to_ipv4(db_url: str) -> tuple[str, str | None]:
+    """
+    Rewrite DATABASE_URL host to IPv4 so the TCP connection is forced over IPv4.
+    Returns (rewritten_url, ipv4_host).
+    """
+    ipv4_host = _resolve_ipv4_host(db_url)
+    if not ipv4_host:
+        return db_url, None
+    try:
+        u = make_url(db_url)
+        u = u.set(host=ipv4_host)
+        return u.render_as_string(hide_password=False), ipv4_host
+    except Exception:
+        return db_url, ipv4_host
 
 
 def resolve_database_url() -> str:
@@ -132,18 +147,15 @@ def main() -> None:
         raise FileNotFoundError(f"Fraud model artifact not found at: {MODEL_PATH}")
 
     db_url = resolve_database_url()
-    hostaddr = _resolve_ipv4_hostaddr(db_url)
+    rewritten_url, ipv4_host = _rewrite_db_url_to_ipv4(db_url)
     try:
-        from sqlalchemy.engine.url import make_url
-
         u = make_url(db_url)
-        print(f"[backfill] Supabase host={u.host} port={u.port} hostaddr_ipv4={hostaddr}")
+        u2 = make_url(rewritten_url)
+        print(f"[backfill] Supabase original_host={u.host} ipv4_host={ipv4_host} rewritten_host={u2.host}")
     except Exception:
-        print(f"[backfill] hostaddr_ipv4={hostaddr}")
-    connect_args: dict[str, object] = {"connect_timeout": 20}
-    if hostaddr:
-        connect_args["hostaddr"] = hostaddr
-    engine = create_engine(db_url, connect_args=connect_args)
+        print(f"[backfill] ipv4_host={ipv4_host}")
+
+    engine = create_engine(rewritten_url, connect_args={"connect_timeout": 20})
 
     art = joblib.load(MODEL_PATH)
     pipeline = art["pipeline"]

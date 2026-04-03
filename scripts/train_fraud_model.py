@@ -74,6 +74,44 @@ def _ensure_sslmode_require(url: str) -> str:
     return f"{url}{joiner}sslmode=require"
 
 
+def _resolve_ipv4_host(db_url: str) -> str | None:
+    """
+    Resolve Supabase hostname to an IPv4 address so CI can connect over IPv4.
+    """
+    try:
+        from sqlalchemy.engine.url import make_url
+
+        u = make_url(db_url)
+        host = u.host
+        port = u.port or 5432
+        if not host:
+            return None
+        infos = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_STREAM)
+        if not infos:
+            return None
+        return infos[0][4][0]
+    except Exception:
+        return None
+
+
+def _rewrite_db_url_to_ipv4(db_url: str) -> tuple[str, str | None]:
+    """
+    Rewrite DATABASE_URL host to an IPv4 address so the TCP connection
+    avoids IPv6 routing issues.
+    """
+    ipv4_host = _resolve_ipv4_host(db_url)
+    if not ipv4_host:
+        return db_url, None
+    try:
+        from sqlalchemy.engine.url import make_url
+
+        u = make_url(db_url)
+        u2 = u.set(host=ipv4_host)
+        return u2.render_as_string(hide_password=False), ipv4_host
+    except Exception:
+        return db_url, ipv4_host
+
+
 def resolve_postgres_connection_url() -> str:
     """Database URL from DATABASE_URL or discrete SUPABASE_DB_* vars (recommended if URL keeps breaking)."""
     from sqlalchemy.engine.url import URL
@@ -119,25 +157,17 @@ def load_tables_postgres(url: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
         from sqlalchemy import create_engine, text
     except ImportError as exc:
         raise RuntimeError("Install sqlalchemy for DATABASE_URL training: pip install sqlalchemy psycopg2-binary") from exc
-    # GitHub runners may have IPv6 routing issues; force IPv4 by resolving host
-    # to an IPv4 address and passing it as `hostaddr` to psycopg2.
-    connect_args: dict[str, object] = {"connect_timeout": 20}
-    hostaddr = None
+    rewritten_url, ipv4_host = _rewrite_db_url_to_ipv4(url)
     try:
         from sqlalchemy.engine.url import make_url
-        u = make_url(url)
-        host = u.host
-        port = u.port or 5432
-        if host:
-            infos = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_STREAM)
-            if infos:
-                hostaddr = infos[0][4][0]
-                connect_args["hostaddr"] = hostaddr
-    except Exception:
-        pass
-    print(f"[train] Supabase hostaddr_ipv4={hostaddr}")
 
-    engine = create_engine(url, connect_args=connect_args)
+        u0 = make_url(url)
+        u1 = make_url(rewritten_url)
+        print(f"[train] Supabase original_host={u0.host} ipv4_host={ipv4_host} rewritten_host={u1.host}")
+    except Exception:
+        print(f"[train] Supabase ipv4_host={ipv4_host}")
+
+    engine = create_engine(rewritten_url, connect_args={"connect_timeout": 20})
     try:
         customers = pd.read_sql_query(text("SELECT * FROM customers"), engine)
         orders = pd.read_sql_query(text("SELECT * FROM orders"), engine)
